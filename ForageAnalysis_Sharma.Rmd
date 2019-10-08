@@ -1,0 +1,202 @@
+---
+title: "EstimationBiomass"
+author: "Sonisa Sharma"
+date: "August 8, 2019"
+output:
+  html_document: default
+---
+
+```{r setup,include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(progress = FALSE, verbose = FALSE)
+knitr::opts_chunk$set(echo = FALSE, message=FALSE, warning=FALSE)
+```
+## Load the packages
+
+*The aim of this script is to create a database that includes data from Alfalfa, Bermuda grass, Brassica, Tall fescue, and the wheat. There are two sets of data 1) the historical data from where we will find the best model and then implemented in the 2) new datasets, use the models to estimate the accuracy*
+
+
+```{r packages}
+library(xlsx)
+library(tidyverse)
+library(caret)
+library(MASS)
+library(GGally)
+#library(dplyr)
+library(taskscheduleR)
+library(miniUI)
+library(shiny)
+library(scales)
+library(knitr)
+```
+
+## Load the Forage tower data and physical data and then merge those files and use best model for each variety to estimate biomass in new incoming data. For finding the best model, we need to use historical data and figure out which one is better
+
+```{r load}
+#path=list.files(path="//A:/agronomysensors/documentLibrary/PROJECT FOLDERS - Active/Sensor Model Development/Sensor Box Platform/Historic/Bermudagrass", pattern=".xlsx", full.names = TRUE)
+#df.list<-do.call("rbind", lapply(Files, function(x) read.xlsx(file=x, sheetIndex=3, colIndex=(1:50), header=TRUE, FILENAMEVAR=x)))
+#df.list$Date<-substr(x = df.list$CalibrationFileName, start = 54, stop = 62)
+```
+
+
+# Part 1: Field data
+
+*The overall explore is to explore the data related to foarge tower especially the canopy height, biomass from clipping and the biomass from the tower.In this section, we will get only the harvest date, species, cultivar,sample dry weight in g, quad size in m2, clipped foarge yield, canopy height, inflorescence height, and average biomass from the cart.New datasets will include only these datasets.*
+
+```{r read&susbet}
+Historicdata<- read.xlsx("A:/agronomysensors/documentLibrary/PROJECT FOLDERS - Active/Sensor Model Development/Sensor Box Platform/Historic/Bermudagrass/Bermudagrass_2016 PredictiveModeling_MasterData.xlsx",sheetName = 1)
+newdata <- Historicdata[c(2,5,16,18,21:38,41:62)]
+newdata$Ntrt<-substr(x = newdata$treatment, start = 1, stop = 2)
+newdata$trt<-gsub("N","\\",newdata$Ntrt)
+Data <- newdata[!names(newdata) %in% c("plant_date","treatment","Ntrt")]
+Data[is.na(Data)] <- 0
+```
+
+## Unmerge the file based on physical and sensor data
+
+```{r ummerge}
+Physicaldata <- as.data.frame(Historicdata[,1:40])
+Sensordata<- as.data.frame(Historicdata[,c(2,22,41:62)])
+```
+
+## Now merge both the data based on sensor date and physicaldata based on unique identifiers sensor.date and id  
+
+```{r merge}
+Physicalsensor<-
+  merge(Physicaldata, Sensordata, by = c("sensor.date","sstrt_id"))
+```
+
+
+*For a given predictor (p), multicollinearity can assessed by computing a score called the variance inflation factor (or VIF), which measures how much the variance of a regression coefficient is inflated due to multicollinearity in the model. In this script, we will figure out which models is better in estimating biomass and then used the best model in the new set of data*
+
+```{r model}
+Data$first<- (65.3*Data$lascm)+(58.3*Data$sonicht*Data$HSNDVI)
+Data$second<-(65.7*Data$lascm)+(49*Data$sonicht)
+Data$third<- -61926.4+227.063*Data$lascm+89.694*Data$sonicht+2108.812*Data$CCCVI+9763.085*Data$HSNDVI+2613.75*Data$RE+0.546*Data$IPAR+7.828*Data$RPAR
+#t.test(newdata$first, newdata$DMY_kg_ha,alternative="two.sided",paired = FALSE,var.equal = FALSE, conf.level = 0.95)
+#t.test(newdata$second, newdata$DMY_kg_ha,alternative="two.sided",paired = FALSE,var.equal = FALSE, conf.level = 0.95)
+```
+
+```{r vif}
+set.seed(123)
+data<-data.frame(Data)
+pm<-ggpairs(data[, c(5,23:27,30,43:46)],
+ lower=list(continuous="smooth", wrap=c(colour="blue")),
+ diag=list(continuous="barDiag", wrap=c(colour="blue")))
+pm
+g<-ggplot(data = data, aes(x = DMY_kg_ha, y = lascm, color = trt))+geom_point()
+g
+inTrain = createDataPartition(data$first, p = 0.8, list = FALSE)
+training = data[inTrain,]
+testing = data[-inTrain,]
+```
+
+## Simple Linear Regression
+# Fit and interpret the model
+
+```{r lm1}
+#library(randomForest)
+#modFit <- randomForest(first ~ sensor.date+DMY_kg_ha+lasavg+lascm+sonicht+ndvi, data = training)# the y-response should be a categorical data and in our case it is not.
+modfit<-train(first~sensor.date+DMY_kg_ha+lasavg+lascm+sonicht+ndvi, data = training, method = "lm")
+summary(modfit) 
+head(predict(modfit, testing, interval = "confidence"), 5)
+head(predict(modfit, testing, interval = "prediction"), 10)
+#Diagnostic Plot
+par(mfrow = c(2,2))
+#modfit$finalModel
+#png("Rpart.png")
+#plot(modfit)
+#predicted= predict(modfit,testing)
+#table(predicted, data$first)
+#suppressMessages(library(rattle))
+#library(rpart.plot)
+#fancyRpartPlot(modFit$finalModel)
+```
+
+```{r unwanted}
+#cols <- c("ndvi", "first", "second", "third","DMY_kg_ha")
+#newdata[cols] <- lapply(newdata[cols], factor)  ## as.factor() could also be used
+#data1 = as.matrix(training)
+#modelFit<-train(first~ndvi+trt+lasavg, data=training, method='lm')
+#modelFit
+predictions <- modfit %>% predict(testing)
+# Model performance
+data.frame(
+  RMSE = RMSE(predictions, testing$first),
+  R2 = R2(predictions, testing$first)
+)
+pglm<-predict(modfit,testing)
+missClass = function(values,prediction){sum(((prediction > 0.5)*1) != values)/length(values)}
+missClass(testing$first, predict(modfit, newdata = testing))
+missClass(training$first, predict(modfit, newdata = training))
+```
+
+
+```{r lm}
+## fit model
+fit <- lm(data$first~data$DMY_kg_ha, data = data)
+## Calculate RMSE and other values
+rmse <- round(sqrt(mean(resid(fit)^2)), 2)
+coefs <- coef(fit)
+b0 <- round(coefs[1], 2)
+b1 <- round(coefs[2],2)
+r2 <- round(summary(fit)$r.squared, 2)
+eqn <- bquote(italic(y) == .(b0) + .(b1)*italic(x) * "," ~~ 
+                  r^2 == .(r2) * "," ~~ RMSE == .(rmse))
+fit1 <- lm(data$second~data$DMY_kg_ha, data = data)
+## Calculate RMSE and other values
+rmse1 <- round(sqrt(mean(resid(fit1)^2)), 2)
+coefs1 <- coef(fit1)
+b0 <- round(coefs1[1], 2)
+b1 <- round(coefs1[2],2)
+r21 <- round(summary(fit1)$r.squared, 2)
+eqn1 <- bquote(italic(y) == .(b0) + .(b1)*italic(x) * "," ~~ 
+                  r^2 == .(r21) * "," ~~ RMSE == .(rmse1))
+#fit third model
+fit2 <- lm(data$third~data$DMY_kg_ha, data = data)
+## Calculate RMSE and other values
+rmse2 <- round(sqrt(mean(resid(fit2)^2)), 2)
+coefs2 <- coef(fit2)
+b0 <- round(coefs2[1], 2)
+b1 <- round(coefs2[2],2)
+r22 <- round(summary(fit2)$r.squared, 2)
+eqn2 <- bquote(italic(y) == .(b0) + .(b1)*italic(x) * "," ~~ 
+                  r^2 == .(r22) * "," ~~ RMSE == .(rmse2))
+```
+
+```{r ggplotBermuda}
+## Plot the first model
+plot(data$first ~ data$DMY_kg_ha,pch = "*", cex=1, col="darkgreen", lwd=1,xlab="Observed Biomass(kg/ha)", ylab="Estimated Biomass(kg/ha)")
+abline(fit)
+text(1, 2500, eqn, pos = 4)
+# Plot the second model
+par(new=TRUE)
+plot(data$second ~ data$DMY_kg_ha,pch = "*", cex=1, col="blue", lwd=1,axes= FALSE, xlab='', ylab='')
+abline(fit1)
+text(1, 2300, eqn1, pos = 4)
+par(new=TRUE)
+plot(data$third ~ data$DMY_kg_ha,pch = "*", cex=1, col="red", lwd=1,axes= FALSE, xlab='', ylab='')
+text(1, 2000, eqn2, pos = 4)# still not working
+abline(fit2)
+legend(7000,2200,paste("NDVIinclusionmodel"), col = "darkgreen", pch = "*")#still not working
+legend(6000,1500,paste("Heightmodel"),col = "blue", pch = "*")#still not working
+legend(5000,1000,paste("multiple"),col = "red", pch = "*")#still not working
+#ggplot(newdata,aes(x = newdata$DMY_kg_ha,y = newdata$first))+geom_point()+ geom_smooth(method ="lm") +
+ #xlab("Observed biomass")+ylab("Estimated biomass")+theme_bw()
+```
+
+
+*For Alfalfa, use two equations and see which one is better*
+
+```{r alfalfa}
+Data$Alfafirst<- (46.22*Data$lascm)+47.83*(Data$sonicht*Data$HSNDVI)
+Data$Alfasecond<-(46.9*Data$lascm)+(43.13*Data$sonicht)
+```
+
+#Lets used different machine learning method such as random forest, ANN method
+
+```{r machine}
+fit3 <- rpart(Alfafirst ~sensor.date+DMY_kg_ha+lasavg+lascm+sonicht+ndvi, data = Data,
+              control = rpart.control(cp = 0.05))
+```
+
